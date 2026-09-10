@@ -1,10 +1,10 @@
-import React, { useState, useMemo, useEffect } from "react";
-import { storageGet, storageSet } from "./storage";
+import React, { useState, useMemo, useEffect, useRef } from "react";
+import * as XLSX from "xlsx";
 import {
   Waves, Check, X, RotateCcw, Clock, Search, Plus, ChevronLeft, ChevronRight,
   Star, CreditCard, LayoutDashboard, Users, Calendar as CalendarIcon,
   UserPlus, Trash2, Pencil, ArrowLeft, AlertTriangle, Copy, Archive,
-  ArchiveRestore, ClipboardList, ShieldCheck, ChevronDown, StickyNote
+  ArchiveRestore, ClipboardList, ShieldCheck, ChevronDown, StickyNote, Upload, FileSpreadsheet
 } from "lucide-react";
 
 /* ============================== COSTANTI DI DOMINIO ============================== */
@@ -99,7 +99,70 @@ function daysUntil(dateStr) {
   return Math.round((d.getTime() - TODAY.getTime()) / 86400000);
 }
 
-/* ============================== DATI SEED ============================== */
+/* ============================== IMPORT EXCEL ============================== */
+
+const EXCEL_HEADER_MAP = {
+  nome: ["nome"],
+  cognome: ["cognome"],
+  dataNascita: ["data di nascita", "data nascita", "datanascita", "nascita", "data"],
+  livello: ["livello"],
+  stato: ["stato"],
+  certificato: ["certificato", "scadenza certificato", "certificato scadenza", "scadenza"],
+  note: ["note", "nota"],
+};
+
+function normalizeHeader(h) { return String(h || "").trim().toLowerCase(); }
+
+function mapExcelRow(rawRow) {
+  const out = {};
+  Object.keys(rawRow).forEach((key) => {
+    const nk = normalizeHeader(key);
+    for (const [field, variants] of Object.entries(EXCEL_HEADER_MAP)) {
+      if (variants.includes(nk)) { out[field] = rawRow[key]; break; }
+    }
+  });
+  return out;
+}
+
+function excelDateToKey(v) {
+  if (!v) return "";
+  if (v instanceof Date && !isNaN(v.getTime())) return toKey(v);
+  const s = String(v).trim();
+  const m1 = s.match(/^(\d{1,2})[\/\-.](\d{1,2})[\/\-.](\d{2,4})$/);
+  if (m1) {
+    let [, d, mo, y] = m1;
+    if (y.length === 2) y = "20" + y;
+    return `${y}-${pad(parseInt(mo, 10))}-${pad(parseInt(d, 10))}`;
+  }
+  const m2 = s.match(/^(\d{4})-(\d{2})-(\d{2})$/);
+  if (m2) return s;
+  return "";
+}
+
+function parseStudentsWorkbook(file) {
+  return new Promise((resolve, reject) => {
+    const reader = new FileReader();
+    reader.onload = (e) => {
+      try {
+        const data = new Uint8Array(e.target.result);
+        const wb = XLSX.read(data, { type: "array", cellDates: true });
+        const sheets = wb.SheetNames.map((name) => {
+          const ws = wb.Sheets[name];
+          const json = XLSX.utils.sheet_to_json(ws, { defval: "" });
+          const rows = json.map(mapExcelRow).filter((r) => (r.nome && String(r.nome).trim()) || (r.cognome && String(r.cognome).trim()));
+          return { sheetName: name, rows };
+        }).filter((s) => s.rows.length > 0);
+        resolve(sheets);
+      } catch (err) {
+        reject(err);
+      }
+    };
+    reader.onerror = () => reject(new Error("Errore nella lettura del file"));
+    reader.readAsArrayBuffer(file);
+  });
+}
+
+
 
 function seedStudents() {
   return [
@@ -244,7 +307,7 @@ export default function SwimSchoolApp() {
       try {
         const keys = ["students-v1", "courses-v1", "attendance-v1", "payments-v1", "evaluations-v1"];
         const results = await Promise.all(keys.map(async (k) => {
-          try { return await storageGet(k); }
+          try { const r = await window.storage.get(k, false); return r ? JSON.parse(r.value) : null; }
           catch { return null; }
         }));
         if (cancelled) return;
@@ -266,11 +329,11 @@ export default function SwimSchoolApp() {
   }, []);
 
   // Salvataggio automatico ad ogni modifica (solo dopo il caricamento iniziale)
-  useEffect(() => { if (loaded) storageSet("students-v1", students).catch(() => {}); }, [students, loaded]);
-  useEffect(() => { if (loaded) storageSet("courses-v1", courses).catch(() => {}); }, [courses, loaded]);
-  useEffect(() => { if (loaded) storageSet("attendance-v1", attendance).catch(() => {}); }, [attendance, loaded]);
-  useEffect(() => { if (loaded) storageSet("payments-v1", payments).catch(() => {}); }, [payments, loaded]);
-  useEffect(() => { if (loaded) storageSet("evaluations-v1", evaluations).catch(() => {}); }, [evaluations, loaded]);
+  useEffect(() => { if (loaded) window.storage.set("students-v1", JSON.stringify(students), false).catch(() => {}); }, [students, loaded]);
+  useEffect(() => { if (loaded) window.storage.set("courses-v1", JSON.stringify(courses), false).catch(() => {}); }, [courses, loaded]);
+  useEffect(() => { if (loaded) window.storage.set("attendance-v1", JSON.stringify(attendance), false).catch(() => {}); }, [attendance, loaded]);
+  useEffect(() => { if (loaded) window.storage.set("payments-v1", JSON.stringify(payments), false).catch(() => {}); }, [payments, loaded]);
+  useEffect(() => { if (loaded) window.storage.set("evaluations-v1", JSON.stringify(evaluations), false).catch(() => {}); }, [evaluations, loaded]);
 
   const [anagraficaId, setAnagraficaId] = useState(null);
   const [addingStudentOpen, setAddingStudentOpen] = useState(false);
@@ -279,6 +342,9 @@ export default function SwimSchoolApp() {
   const [courseForm, setCourseForm] = useState(null); // { mode:'new'|'edit', data:{...} }
   const [showArchived, setShowArchived] = useState(false);
   const [globalSearch, setGlobalSearch] = useState("");
+  const fileInputRef = useRef(null);
+  const [importSheets, setImportSheets] = useState(null);
+  const [importError, setImportError] = useState("");
 
   const isAdmin = role === "admin";
   const studentById = (id) => students.find((s) => s.id === id);
@@ -345,7 +411,68 @@ export default function SwimSchoolApp() {
     setCourseForm(null);
   }
 
-  /* ---------- Presenze ---------- */
+  /* ---------- Import Excel ---------- */
+  function handleFileSelected(e) {
+    const file = e.target.files[0];
+    e.target.value = "";
+    if (!file) return;
+    setImportError("");
+    parseStudentsWorkbook(file)
+      .then((sheets) => {
+        if (sheets.length === 0) { setImportError("Nessun dato leggibile trovato nel file."); return; }
+        const withMatch = sheets.map((s) => {
+          const lower = s.sheetName.trim().toLowerCase();
+          const match = courses.find((c) => !c.archived && c.nome.trim().toLowerCase() === lower)
+            || courses.find((c) => !c.archived && c.nome.trim().toLowerCase().includes(lower));
+          return { ...s, courseId: match ? match.id : "" };
+        });
+        setImportSheets(withMatch);
+      })
+      .catch(() => setImportError("Impossibile leggere il file. Verifica che sia un file Excel (.xlsx) valido."));
+  }
+
+  function updateImportCourse(sheetName, courseId) {
+    setImportSheets((prev) => prev.map((s) => s.sheetName === sheetName ? { ...s, courseId } : s));
+  }
+
+  function confirmImport() {
+    let newStudents = [...students];
+    let newCourses = [...courses];
+    let nextIdNum = Math.max(0, ...newStudents.map((s) => parseInt(s.id.slice(1), 10) || 0)) + 1;
+
+    importSheets.forEach((sheet) => {
+      if (!sheet.courseId) return;
+      sheet.rows.forEach((row) => {
+        const nome = String(row.nome || "").trim();
+        const cognome = String(row.cognome || "").trim();
+        if (!nome && !cognome) return;
+        let existing = newStudents.find((s) => s.nome.trim().toLowerCase() === nome.toLowerCase() && s.cognome.trim().toLowerCase() === cognome.toLowerCase());
+        let studentId;
+        if (existing) {
+          studentId = existing.id;
+        } else {
+          studentId = "s" + nextIdNum++;
+          const statoRaw = String(row.stato || "").trim().toLowerCase();
+          newStudents.push({
+            id: studentId,
+            nome, cognome,
+            dataNascita: excelDateToKey(row.dataNascita) || "2015-01-01",
+            livello: String(row.livello || "").trim() || "Base",
+            stato: ["attivo", "sospeso", "ritirato"].includes(statoRaw) ? statoRaw : "attivo",
+            certificato: excelDateToKey(row.certificato) || "",
+            note: String(row.note || "").trim(),
+          });
+        }
+        const cid = sheet.courseId;
+        newCourses = newCourses.map((c) => c.id === cid && !c.studentIds.includes(studentId)
+          ? { ...c, studentIds: [...c.studentIds, studentId] } : c);
+      });
+    });
+
+    setStudents(newStudents);
+    setCourses(newCourses);
+    setImportSheets(null);
+  }
   function cycleFor(role_) { return role_ === "admin" ? CYCLE_ADMIN : CYCLE_SEGRETERIA; }
 
   function handleCellClick(courseId, studentId, dateKey) {
@@ -464,6 +591,8 @@ export default function SwimSchoolApp() {
       <style>{`
         @import url('https://fonts.googleapis.com/css2?family=Manrope:wght@400;500;600;700;800&display=swap');
         .grid-body { font-family: system-ui, -apple-system, sans-serif; }
+        .overflow-auto { -webkit-overflow-scrolling: touch; }
+        html, body { overscroll-behavior-x: none; }
         ::-webkit-scrollbar { height: 8px; width: 8px; }
         ::-webkit-scrollbar-thumb { background: #C3D3D6; border-radius: 8px; }
         ::-webkit-scrollbar-track { background: transparent; }
@@ -473,7 +602,7 @@ export default function SwimSchoolApp() {
       <header className="sticky top-0 z-30 border-b" style={{ backgroundColor: PRIMARY_DARK, borderColor: BORDER }}>
         <div className="flex items-center gap-3 px-3 sm:px-5 py-2.5">
           <Waves size={22} color="#DDF4F8" />
-          <span className="font-bold text-white text-[15px] sm:text-base tracking-tight">Meeting Club · Scuola Nuoto</span>
+          <span className="font-bold text-white text-[15px] sm:text-base tracking-tight">Meeting Evolution · Scuola Nuoto</span>
 
           <nav className="hidden md:flex items-center gap-1 ml-4">
             <NavBtn icon={<ClipboardList size={15} />} label="Registro" active={view === "registro"} onClick={() => { setView("registro"); setOpenCourseId(null); }} />
@@ -514,6 +643,17 @@ export default function SwimSchoolApp() {
                 </div>
               )}
             </div>
+
+            {isAdmin && (
+              <>
+                <button onClick={() => fileInputRef.current?.click()}
+                  className="px-2.5 py-1.5 rounded-lg text-[12px] font-semibold flex items-center gap-1 whitespace-nowrap"
+                  style={{ backgroundColor: "#134A5C", color: "#EAFBFE" }}>
+                  <Upload size={13} /> <span className="hidden sm:inline">Importa Excel</span>
+                </button>
+                <input ref={fileInputRef} type="file" accept=".xlsx,.xls" className="hidden" onChange={handleFileSelected} />
+              </>
+            )}
 
             <div className="flex items-center rounded-lg overflow-hidden border" style={{ borderColor: "#134A5C" }}>
               <button onClick={() => setRole("admin")} className="px-2.5 py-1.5 text-[12px] font-semibold flex items-center gap-1"
@@ -605,6 +745,23 @@ export default function SwimSchoolApp() {
           form={courseForm}
           onCancel={() => setCourseForm(null)}
           onSave={handleSaveCourse}
+        />
+      )}
+
+      {importError && (
+        <div className="fixed bottom-4 left-1/2 -translate-x-1/2 z-50 px-4 py-2.5 rounded-xl text-[13px] font-semibold text-white shadow-lg" style={{ backgroundColor: ASSENTE }}>
+          {importError}
+          <button onClick={() => setImportError("")} className="ml-3 underline">Chiudi</button>
+        </div>
+      )}
+
+      {importSheets && (
+        <ImportExcelModal
+          sheets={importSheets}
+          courses={courses.filter((c) => !c.archived)}
+          onUpdateCourse={updateImportCourse}
+          onConfirm={confirmImport}
+          onCancel={() => setImportSheets(null)}
         />
       )}
     </div>
@@ -817,8 +974,8 @@ function CourseView({
       </div>
 
       <div className="rounded-2xl border overflow-hidden" style={{ borderColor: BORDER, backgroundColor: SURFACE }}>
-        <div className="overflow-auto max-h-[65vh] grid-body">
-          <table className="border-collapse text-[13px] w-full">
+        <div className="overflow-auto max-h-[65vh] grid-body" style={{ WebkitOverflowScrolling: "touch", overscrollBehavior: "contain" }}>
+          <table className="border-collapse text-[13px]" style={{ width: "max-content", minWidth: "100%" }}>
             <thead>
               <tr>
                 <th className="sticky left-0 top-0 z-20 text-left px-3 py-2 border-b border-r font-bold" style={{ backgroundColor: SURFACE, borderColor: BORDER, minWidth: 160 }}>Allievo</th>
@@ -1322,6 +1479,60 @@ function CourseFormModal({ form, onCancel, onSave }) {
           <div className="flex gap-2 pt-2">
             <button onClick={() => onSave({ mode: form.mode, data })} disabled={!data.nome || data.giorni.length === 0}
               className="text-[13px] font-bold px-4 py-2 rounded-lg text-white disabled:opacity-40" style={{ backgroundColor: PRIMARY }}>Salva corso</button>
+            <button onClick={onCancel} className="text-[13px] font-semibold px-3 py-2" style={{ color: INK_SOFT }}>Annulla</button>
+          </div>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+function ImportExcelModal({ sheets, courses, onUpdateCourse, onConfirm, onCancel }) {
+  const totalRows = sheets.reduce((n, s) => n + s.rows.length, 0);
+  const assignedRows = sheets.filter((s) => s.courseId).reduce((n, s) => n + s.rows.length, 0);
+  const canConfirm = sheets.some((s) => s.courseId);
+
+  return (
+    <div className="fixed inset-0 z-50 flex items-start sm:items-center justify-center" style={{ backgroundColor: "rgba(10,25,32,0.55)" }} onClick={onCancel}>
+      <div onClick={(e) => e.stopPropagation()} className="w-full sm:max-w-xl sm:rounded-2xl bg-white h-full sm:h-auto sm:max-h-[90vh] overflow-auto" style={{ backgroundColor: SURFACE }}>
+        <div className="sticky top-0 px-5 py-3.5 border-b flex items-center gap-2" style={{ borderColor: BORDER, backgroundColor: SURFACE }}>
+          <FileSpreadsheet size={18} color={PRIMARY} />
+          <div>
+            <div className="font-extrabold text-lg leading-tight">Importa allievi da Excel</div>
+            <div className="text-[12px]" style={{ color: INK_SOFT }}>{sheets.length} fogli trovati · {totalRows} allievi totali</div>
+          </div>
+        </div>
+
+        <div className="p-5 space-y-3">
+          <div className="text-[12px] p-2.5 rounded-lg" style={{ backgroundColor: BG, color: INK_SOFT }}>
+            Per ogni foglio, scegli a quale corso associare gli allievi. Se il nome del foglio corrisponde a un corso esistente, l'abbinamento è già proposto: verificalo prima di confermare.
+          </div>
+
+          {sheets.map((s) => (
+            <div key={s.sheetName} className="rounded-xl border p-3" style={{ borderColor: BORDER }}>
+              <div className="flex items-center justify-between gap-2 mb-2">
+                <div className="font-bold text-[13px]">{s.sheetName}</div>
+                <span className="text-[11px]" style={{ color: INK_SOFT }}>{s.rows.length} righe</span>
+              </div>
+              <select value={s.courseId} onChange={(e) => onUpdateCourse(s.sheetName, e.target.value)}
+                className="w-full px-2 py-1.5 rounded-lg border text-[13px] mb-2" style={{ borderColor: BORDER }}>
+                <option value="">— Nessuno (salta questo foglio) —</option>
+                {courses.map((c) => <option key={c.id} value={c.id}>{c.nome}</option>)}
+              </select>
+              <div className="text-[11px] space-y-0.5" style={{ color: INK_SOFT }}>
+                {s.rows.slice(0, 3).map((r, i) => (
+                  <div key={i}>• {String(r.nome || "").trim()} {String(r.cognome || "").trim()}</div>
+                ))}
+                {s.rows.length > 3 && <div>+ altri {s.rows.length - 3}</div>}
+              </div>
+            </div>
+          ))}
+
+          <div className="flex items-center gap-2 pt-2">
+            <button onClick={onConfirm} disabled={!canConfirm}
+              className="text-[13px] font-bold px-4 py-2 rounded-lg text-white disabled:opacity-40" style={{ backgroundColor: PRIMARY }}>
+              Importa {assignedRows} allievi
+            </button>
             <button onClick={onCancel} className="text-[13px] font-semibold px-3 py-2" style={{ color: INK_SOFT }}>Annulla</button>
           </div>
         </div>
