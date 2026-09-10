@@ -1,5 +1,6 @@
 import React, { useState, useMemo, useEffect, useRef } from "react";
 import * as XLSX from "xlsx";
+import { storageGet, storageSet } from "./storage";
 import {
   Waves, Check, X, RotateCcw, Clock, Search, Plus, ChevronLeft, ChevronRight,
   Star, CreditCard, LayoutDashboard, Users, Calendar as CalendarIcon,
@@ -162,7 +163,7 @@ function parseStudentsWorkbook(file) {
   });
 }
 
-
+/* ============================== DATI SEED ============================== */
 
 function seedStudents() {
   return [
@@ -307,7 +308,7 @@ export default function SwimSchoolApp() {
       try {
         const keys = ["students-v1", "courses-v1", "attendance-v1", "payments-v1", "evaluations-v1"];
         const results = await Promise.all(keys.map(async (k) => {
-          try { const r = await window.storage.get(k, false); return r ? JSON.parse(r.value) : null; }
+          try { return await storageGet(k); }
           catch { return null; }
         }));
         if (cancelled) return;
@@ -329,11 +330,11 @@ export default function SwimSchoolApp() {
   }, []);
 
   // Salvataggio automatico ad ogni modifica (solo dopo il caricamento iniziale)
-  useEffect(() => { if (loaded) window.storage.set("students-v1", JSON.stringify(students), false).catch(() => {}); }, [students, loaded]);
-  useEffect(() => { if (loaded) window.storage.set("courses-v1", JSON.stringify(courses), false).catch(() => {}); }, [courses, loaded]);
-  useEffect(() => { if (loaded) window.storage.set("attendance-v1", JSON.stringify(attendance), false).catch(() => {}); }, [attendance, loaded]);
-  useEffect(() => { if (loaded) window.storage.set("payments-v1", JSON.stringify(payments), false).catch(() => {}); }, [payments, loaded]);
-  useEffect(() => { if (loaded) window.storage.set("evaluations-v1", JSON.stringify(evaluations), false).catch(() => {}); }, [evaluations, loaded]);
+  useEffect(() => { if (loaded) storageSet("students-v1", students).catch(() => {}); }, [students, loaded]);
+  useEffect(() => { if (loaded) storageSet("courses-v1", courses).catch(() => {}); }, [courses, loaded]);
+  useEffect(() => { if (loaded) storageSet("attendance-v1", attendance).catch(() => {}); }, [attendance, loaded]);
+  useEffect(() => { if (loaded) storageSet("payments-v1", payments).catch(() => {}); }, [payments, loaded]);
+  useEffect(() => { if (loaded) storageSet("evaluations-v1", evaluations).catch(() => {}); }, [evaluations, loaded]);
 
   const [anagraficaId, setAnagraficaId] = useState(null);
   const [addingStudentOpen, setAddingStudentOpen] = useState(false);
@@ -473,6 +474,8 @@ export default function SwimSchoolApp() {
     setCourses(newCourses);
     setImportSheets(null);
   }
+
+  /* ---------- Presenze ---------- */
   function cycleFor(role_) { return role_ === "admin" ? CYCLE_ADMIN : CYCLE_SEGRETERIA; }
 
   function handleCellClick(courseId, studentId, dateKey) {
