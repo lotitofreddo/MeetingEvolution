@@ -27,7 +27,7 @@ const FESTIVO_BG = "#EDEFF0";
 const DAY_INDEX = { Lun: 1, Mar: 2, Mer: 3, Gio: 4, Ven: 5, Sab: 6 };
 const WEEKDAY_LABEL = ["Dom", "Lun", "Mar", "Mer", "Gio", "Ven", "Sab"];
 
-const SECTIONS = [
+const DEFAULT_SECTIONS = [
   { key: "lg", label: "Lunedì + Giovedì", days: ["Lun", "Gio"] },
   { key: "mv", label: "Martedì + Venerdì", days: ["Mar", "Ven"] },
   { key: "m", label: "Mercoledì", days: ["Mer"] },
@@ -67,6 +67,11 @@ function fmtShort(d) { return `${pad(d.getDate())}/${pad(d.getMonth() + 1)}`; }
 function weekdayOf(d) { return WEEKDAY_LABEL[d.getDay()]; }
 function isHolidayDate(d) { return HOLIDAYS.has(toKey(d)); }
 function sameDay(a, b) { return toKey(a) === toKey(b); }
+
+function giorniAllievo(course, studentId) {
+  const custom = course.frequenza && course.frequenza[studentId];
+  return (custom && custom.length) ? custom : course.giorni;
+}
 
 function getLessonDatesForMonth(year, month, dayLabels) {
   const dates = [];
@@ -163,7 +168,7 @@ function parseStudentsWorkbook(file) {
   });
 }
 
-/* ============================== DATI SEED ============================== */
+
 
 function seedStudents() {
   return [
@@ -297,6 +302,7 @@ export default function SwimSchoolApp() {
   const [loadError, setLoadError] = useState(false);
   const [students, setStudents] = useState(seedStudents);
   const [courses, setCourses] = useState(seedCourses);
+  const [sections, setSections] = useState(DEFAULT_SECTIONS);
   const [attendance, setAttendance] = useState(() => seedAttendance(seedCourses()));
   const [payments, setPayments] = useState(seedPayments);
   const [evaluations, setEvaluations] = useState(seedEvaluations);
@@ -306,16 +312,14 @@ export default function SwimSchoolApp() {
     let cancelled = false;
     async function load() {
       try {
-        const keys = ["students-v1", "courses-v1", "attendance-v1", "payments-v1", "evaluations-v1"];
-        const results = await Promise.all(keys.map(async (k) => {
-          try { return await storageGet(k); }
-          catch { return null; }
-        }));
+        const keys = ["students-v1", "courses-v1", "sections-v1", "attendance-v1", "payments-v1", "evaluations-v1"];
+        const results = await Promise.all(keys.map((k) => storageGet(k).catch(() => null)));
         if (cancelled) return;
-        const [sStudents, sCourses, sAttendance, sPayments, sEvaluations] = results;
+        const [sStudents, sCourses, sSections, sAttendance, sPayments, sEvaluations] = results;
         const initialCourses = sCourses || seedCourses();
         setCourses(initialCourses);
         setStudents(sStudents || seedStudents());
+        setSections(sSections || DEFAULT_SECTIONS);
         setAttendance(sAttendance || seedAttendance(initialCourses));
         setPayments(sPayments || seedPayments());
         setEvaluations(sEvaluations || seedEvaluations());
@@ -332,6 +336,7 @@ export default function SwimSchoolApp() {
   // Salvataggio automatico ad ogni modifica (solo dopo il caricamento iniziale)
   useEffect(() => { if (loaded) storageSet("students-v1", students).catch(() => {}); }, [students, loaded]);
   useEffect(() => { if (loaded) storageSet("courses-v1", courses).catch(() => {}); }, [courses, loaded]);
+  useEffect(() => { if (loaded) storageSet("sections-v1", sections).catch(() => {}); }, [sections, loaded]);
   useEffect(() => { if (loaded) storageSet("attendance-v1", attendance).catch(() => {}); }, [attendance, loaded]);
   useEffect(() => { if (loaded) storageSet("payments-v1", payments).catch(() => {}); }, [payments, loaded]);
   useEffect(() => { if (loaded) storageSet("evaluations-v1", evaluations).catch(() => {}); }, [evaluations, loaded]);
@@ -412,6 +417,41 @@ export default function SwimSchoolApp() {
     setCourseForm(null);
   }
 
+  function handleCreateSection(days) {
+    if (days.length === 0) return;
+    const DAY_ORDER = ["Lun", "Mar", "Mer", "Gio", "Ven", "Sab"];
+    const sortedDays = DAY_ORDER.filter((d) => days.includes(d));
+    const key = "sez_" + sortedDays.join("").toLowerCase();
+    if (sections.some((s) => s.key === key)) { setActiveSection(key); return; }
+    const label = sortedDays.join(" + ");
+    const newSection = { key, label, days: sortedDays, custom: true };
+    setSections((prev) => [...prev, newSection]);
+    setActiveSection(key);
+  }
+
+  function handleDeleteSection(key) {
+    const hasCourses = courses.some((c) => c.sectionKey === key);
+    if (hasCourses) { alert("Questa sezione contiene ancora dei corsi: spostali o eliminali prima di rimuoverla."); return; }
+    if (!window.confirm("Eliminare questa sezione giorni?")) return;
+    setSections((prev) => prev.filter((s) => s.key !== key));
+    if (activeSection === key) setActiveSection(sections[0]?.key);
+  }
+
+  function setFrequenzaGiorno(courseId, studentId, day) {
+    setCourses((prev) => prev.map((c) => {
+      if (c.id !== courseId) return c;
+      const current = (c.frequenza && c.frequenza[studentId]) || c.giorni;
+      let next;
+      if (current.includes(day)) {
+        if (current.length === 1) return c; // mantieni almeno un giorno
+        next = current.filter((d) => d !== day);
+      } else {
+        next = [...current, day];
+      }
+      return { ...c, frequenza: { ...(c.frequenza || {}), [studentId]: next } };
+    }));
+  }
+
   /* ---------- Import Excel ---------- */
   function handleFileSelected(e) {
     const file = e.target.files[0];
@@ -474,8 +514,6 @@ export default function SwimSchoolApp() {
     setCourses(newCourses);
     setImportSheets(null);
   }
-
-  /* ---------- Presenze ---------- */
   function cycleFor(role_) { return role_ === "admin" ? CYCLE_ADMIN : CYCLE_SEGRETERIA; }
 
   function handleCellClick(courseId, studentId, dateKey) {
@@ -528,10 +566,12 @@ export default function SwimSchoolApp() {
     }
     if (!target) { alert("Nessuna lezione disponibile in questa vista."); return; }
     const dateKey = toKey(target);
+    const targetWeekday = weekdayOf(target);
     const course = courses.find((c) => c.id === courseId);
     setAttendance((prev) => {
       const courseAtt = { ...(prev[courseId] || {}) };
       course.studentIds.forEach((sid) => {
+        if (!giorniAllievo(course, sid).includes(targetWeekday)) return; // non frequenta questo giorno
         const cell = { ...(courseAtt[sid]?.[dateKey] || {}) };
         cell.status = "P";
         courseAtt[sid] = { ...(courseAtt[sid] || {}), [dateKey]: cell };
@@ -684,10 +724,11 @@ export default function SwimSchoolApp() {
         {view === "registro" && !openCourse && (
           <RegistroView
             activeSection={activeSection} setActiveSection={setActiveSection}
-            sectionCourses={sectionCourses} isAdmin={isAdmin}
+            sections={sections} onCreateSection={handleCreateSection} onDeleteSection={handleDeleteSection}
+            sectionCourses={sectionCourses} isAdmin={isAdmin} students={students}
             showArchived={showArchived} setShowArchived={setShowArchived}
             onOpenCourse={setOpenCourseId}
-            onNewCourse={() => setCourseForm({ mode: "new", data: { sectionKey: activeSection, nome: "", giorni: SECTIONS.find(s => s.key === activeSection).days, ora: "17:00", oraFine: "18:00", piscina: "Grande", corsie: [1], livello: "", istruttore: "", capienza: 10, inizio: "2026-09-14", fine: "2027-06-12" } })}
+            onNewCourse={() => setCourseForm({ mode: "new", data: { sectionKey: activeSection, nome: "", giorni: sections.find(s => s.key === activeSection).days, ora: "17:00", oraFine: "18:00", piscina: "Grande", corsie: [1], livello: "", istruttore: "", capienza: 10, inizio: "2026-09-14", fine: "2027-06-12" } })}
             onEditCourse={(c) => setCourseForm({ mode: "edit", data: { ...c } })}
             onDuplicateCourse={handleDuplicateCourse}
             onArchiveCourse={handleArchiveCourse}
@@ -712,6 +753,7 @@ export default function SwimSchoolApp() {
             onAddExisting={handleAddExistingStudent}
             onCreateAndAdd={handleCreateAndAddStudent}
             studentRecuperi={studentRecuperi}
+            onToggleFrequenza={setFrequenzaGiorno}
           />
         )}
 
@@ -746,6 +788,7 @@ export default function SwimSchoolApp() {
       {courseForm && (
         <CourseFormModal
           form={courseForm}
+          sections={sections}
           onCancel={() => setCourseForm(null)}
           onSave={handleSaveCourse}
         />
@@ -783,21 +826,49 @@ function NavBtn({ icon, label, active, onClick, compact }) {
   );
 }
 
-function RegistroView({ activeSection, setActiveSection, sectionCourses, isAdmin, showArchived, setShowArchived, onOpenCourse, onNewCourse, onEditCourse, onDuplicateCourse, onArchiveCourse }) {
+function RegistroView({ activeSection, setActiveSection, sections, onCreateSection, onDeleteSection, sectionCourses, isAdmin, students, showArchived, setShowArchived, onOpenCourse, onNewCourse, onEditCourse, onDuplicateCourse, onArchiveCourse }) {
+  const [newSectionOpen, setNewSectionOpen] = useState(false);
+  const [newSectionDays, setNewSectionDays] = useState([]);
+  const ALL_DAYS = ["Lun", "Mar", "Mer", "Gio", "Ven", "Sab"];
+
+  function toggleDay(day) {
+    setNewSectionDays((prev) => prev.includes(day) ? prev.filter((d) => d !== day) : [...prev, day]);
+  }
+  function submitNewSection() {
+    onCreateSection(newSectionDays);
+    setNewSectionDays([]);
+    setNewSectionOpen(false);
+  }
+
   return (
     <div>
-      <div className="flex flex-wrap items-center gap-2 mb-4">
-        {SECTIONS.map((s) => (
-          <button key={s.key} onClick={() => setActiveSection(s.key)}
-            className="px-3.5 py-2 rounded-xl text-[13px] font-bold border transition"
-            style={{
-              backgroundColor: activeSection === s.key ? PRIMARY : SURFACE,
-              color: activeSection === s.key ? "white" : INK,
-              borderColor: activeSection === s.key ? PRIMARY : BORDER,
-            }}>
-            {s.label}
-          </button>
+      <div className="flex flex-wrap items-center gap-2 mb-2">
+        {sections.map((s) => (
+          <div key={s.key} className="relative group/tab">
+            <button onClick={() => setActiveSection(s.key)}
+              className="px-3.5 py-2 rounded-xl text-[13px] font-bold border transition"
+              style={{
+                backgroundColor: activeSection === s.key ? PRIMARY : SURFACE,
+                color: activeSection === s.key ? "white" : INK,
+                borderColor: activeSection === s.key ? PRIMARY : BORDER,
+              }}>
+              {s.label}
+            </button>
+            {isAdmin && s.custom && (
+              <button onClick={() => onDeleteSection(s.key)} title="Elimina sezione"
+                className="absolute -top-1.5 -right-1.5 w-4 h-4 rounded-full flex items-center justify-center opacity-0 group-hover/tab:opacity-100"
+                style={{ backgroundColor: ASSENTE, color: "white" }}>
+                <X size={10} strokeWidth={3} />
+              </button>
+            )}
+          </div>
         ))}
+        {isAdmin && (
+          <button onClick={() => setNewSectionOpen(!newSectionOpen)}
+            className="px-3 py-2 rounded-xl text-[13px] font-bold border-2 border-dashed flex items-center gap-1" style={{ borderColor: BORDER, color: INK_SOFT }}>
+            <Plus size={14} /> Nuova sezione giorni
+          </button>
+        )}
         <div className="ml-auto flex items-center gap-2">
           {isAdmin && (
             <button onClick={() => setShowArchived(!showArchived)} className="text-[12px] font-medium px-2.5 py-1.5 rounded-lg border" style={{ borderColor: BORDER, color: INK_SOFT }}>
@@ -812,6 +883,21 @@ function RegistroView({ activeSection, setActiveSection, sectionCourses, isAdmin
         </div>
       </div>
 
+      {newSectionOpen && (
+        <div className="rounded-xl border p-3 mb-4 flex flex-wrap items-center gap-2" style={{ borderColor: BORDER, backgroundColor: SURFACE }}>
+          <span className="text-[12px] font-semibold" style={{ color: INK_SOFT }}>Giorni della nuova sezione:</span>
+          {ALL_DAYS.map((d) => (
+            <button key={d} onClick={() => toggleDay(d)} className="px-2.5 py-1 rounded-lg text-[12px] font-bold border"
+              style={{ backgroundColor: newSectionDays.includes(d) ? PRIMARY : SURFACE, color: newSectionDays.includes(d) ? "white" : INK, borderColor: BORDER }}>
+              {d}
+            </button>
+          ))}
+          <button onClick={submitNewSection} disabled={newSectionDays.length === 0}
+            className="text-[12px] font-bold px-3 py-1.5 rounded-lg text-white disabled:opacity-40" style={{ backgroundColor: PRIMARY }}>Crea sezione</button>
+          <button onClick={() => { setNewSectionOpen(false); setNewSectionDays([]); }} className="text-[12px] font-semibold px-2" style={{ color: INK_SOFT }}>Annulla</button>
+        </div>
+      )}
+
       {sectionCourses.length === 0 && (
         <div className="text-center py-16 rounded-2xl border-2 border-dashed" style={{ borderColor: BORDER, color: INK_SOFT }}>
           {showArchived ? "Nessun corso archiviato in questa sezione." : "Nessun corso in questa sezione. Crea il primo corso per iniziare."}
@@ -819,19 +905,34 @@ function RegistroView({ activeSection, setActiveSection, sectionCourses, isAdmin
       )}
 
       <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-3">
-        {sectionCourses.map((c) => (
+        {sectionCourses.map((c) => {
+          const iscritti = c.studentIds.map((id) => students.find((s) => s.id === id)).filter(Boolean);
+          const attivi = iscritti.filter((s) => s.stato !== "ritirato");
+          const PREVIEW_MAX = 5;
+          const nomiPreview = attivi.slice(0, PREVIEW_MAX).map((s) => `${s.nome} ${s.cognome[0]}.`);
+          const altriCount = attivi.length - nomiPreview.length;
+          return (
           <div key={c.id} className="rounded-2xl border p-4 relative group" style={{ backgroundColor: SURFACE, borderColor: BORDER }}>
             <button onClick={() => onOpenCourse(c.id)} className="text-left w-full">
               <div className="flex items-start justify-between gap-2">
                 <h3 className="font-bold text-[15px] leading-snug">{c.nome}</h3>
-                <span className="text-[11px] font-semibold px-2 py-0.5 rounded-full whitespace-nowrap" style={{ backgroundColor: c.studentIds.length >= c.capienza ? "#FBEAE8" : "#EAF4F0", color: c.studentIds.length >= c.capienza ? ASSENTE : PRESENTE }}>
-                  {c.studentIds.length}/{c.capienza}
+                <span className="text-[11px] font-semibold px-2 py-0.5 rounded-full whitespace-nowrap" style={{ backgroundColor: attivi.length >= c.capienza ? "#FBEAE8" : "#EAF4F0", color: attivi.length >= c.capienza ? ASSENTE : PRESENTE }}>
+                  {attivi.length}/{c.capienza}
                 </span>
               </div>
               <div className="text-[12px] mt-1.5 space-y-0.5" style={{ color: INK_SOFT }}>
                 <div>{c.giorni.join(" · ")} &nbsp;·&nbsp; {c.ora}–{c.oraFine}</div>
                 <div>Vasca {c.piscina} · Corsie {c.corsie.join(", ")}</div>
                 <div>{c.livello} · Istr. {c.istruttore}</div>
+              </div>
+              <div className="mt-2 pt-2 border-t flex flex-wrap gap-1" style={{ borderColor: BORDER }}>
+                {nomiPreview.length === 0 && <span className="text-[11px]" style={{ color: INK_SOFT }}>Nessun allievo iscritto</span>}
+                {nomiPreview.map((n, i) => (
+                  <span key={i} className="text-[11px] font-medium px-1.5 py-0.5 rounded" style={{ backgroundColor: BG, color: INK }}>{n}</span>
+                ))}
+                {altriCount > 0 && (
+                  <span className="text-[11px] font-semibold px-1.5 py-0.5 rounded" style={{ backgroundColor: BG, color: INK_SOFT }}>+{altriCount} altri</span>
+                )}
               </div>
             </button>
             {isAdmin && (
@@ -846,7 +947,8 @@ function RegistroView({ activeSection, setActiveSection, sectionCourses, isAdmin
               </div>
             )}
           </div>
-        ))}
+          );
+        })}
       </div>
     </div>
   );
@@ -865,7 +967,7 @@ function CourseView({
   selectedMonthIdx, setSelectedMonthIdx, onBack, onCellClick, onNoteClick, onMarkAllPresent,
   onOpenAnagrafica, onRemoveStudent, addingStudentOpen, setAddingStudentOpen,
   studentSearch, setStudentSearch, newStudentForm, setNewStudentForm, allStudents,
-  onAddExisting, onCreateAndAdd, studentRecuperi,
+  onAddExisting, onCreateAndAdd, studentRecuperi, onToggleFrequenza,
 }) {
   const courseStart = new Date(course.inizio);
   const courseEnd = new Date(course.fine);
@@ -881,7 +983,9 @@ function CourseView({
     return dates.filter((d) => d.getTime() >= courseStart.getTime() && d.getTime() <= courseEnd.getTime());
   }, [courseViewMode, selectedMonthIdx, course]);
 
-  const enrolled = course.studentIds.map((id) => students.find((s) => s.id === id)).filter(Boolean);
+  const enrolledAll = course.studentIds.map((id) => students.find((s) => s.id === id)).filter(Boolean);
+  const enrolled = enrolledAll.filter((s) => s.stato !== "ritirato");
+  const ritirati = enrolledAll.filter((s) => s.stato === "ritirato");
 
   const searchResults = allStudents.filter((s) =>
     !course.studentIds.includes(s.id) &&
@@ -976,88 +1080,135 @@ function CourseView({
         )}
       </div>
 
-      <div className="rounded-2xl border overflow-hidden" style={{ borderColor: BORDER, backgroundColor: SURFACE }}>
-        <div className="overflow-auto max-h-[65vh] grid-body" style={{ WebkitOverflowScrolling: "touch", overscrollBehavior: "contain" }}>
-          <table className="border-collapse text-[13px]" style={{ width: "max-content", minWidth: "100%" }}>
-            <thead>
-              <tr>
-                <th className="sticky left-0 top-0 z-20 text-left px-3 py-2 border-b border-r font-bold" style={{ backgroundColor: SURFACE, borderColor: BORDER, minWidth: 160 }}>Allievo</th>
-                {displayedDates.map((d) => {
-                  const hol = isHolidayDate(d);
-                  const today = sameDay(d, TODAY);
-                  return (
-                    <th key={toKey(d)} className="sticky top-0 z-10 px-1 py-2 border-b text-center font-semibold"
-                      style={{ backgroundColor: hol ? FESTIVO_BG : (today ? "#DFF3F6" : SURFACE), borderColor: BORDER, minWidth: 56, color: hol ? "#9AA5A8" : INK }}>
-                      <div>{fmtShort(d)}</div>
-                      <div className="text-[10px] font-normal" style={{ color: INK_SOFT }}>{hol ? "Festivo" : weekdayOf(d)}</div>
-                    </th>
-                  );
-                })}
-              </tr>
-            </thead>
-            <tbody>
-              {enrolled.length === 0 && (
-                <tr><td className="px-3 py-6 text-center" colSpan={displayedDates.length + 1} style={{ color: INK_SOFT }}>Nessun allievo iscritto. Usa "Aggiungi allievo" per iniziare.</td></tr>
-              )}
-              {enrolled.map((st) => {
-                const rec = studentRecuperi(st.id);
-                return (
-                  <tr key={st.id} className="group">
-                    <td className="sticky left-0 z-10 px-3 py-1.5 border-r border-b" style={{ backgroundColor: SURFACE, borderColor: BORDER }}>
-                      <div className="flex items-center justify-between gap-1">
-                        <button onClick={() => onOpenAnagrafica(st.id)} className="text-left font-semibold hover:underline truncate" style={{ maxWidth: 120 }}>
-                          {st.nome} {st.cognome}
-                        </button>
-                        {isAdmin && (
-                          <button onClick={() => onRemoveStudent(course.id, st.id)} title="Rimuovi dal corso" className="opacity-0 group-hover:opacity-100 p-0.5">
-                            <Trash2 size={12} color={ASSENTE} />
-                          </button>
-                        )}
-                      </div>
-                      {rec.disponibili > 0 && (
-                        <span className="text-[10px] font-bold px-1.5 py-0.5 rounded" style={{ backgroundColor: "#EFE9F9", color: RECUPERO }}>R disp. {rec.disponibili}</span>
-                      )}
-                    </td>
-                    {displayedDates.map((d) => {
-                      const hol = isHolidayDate(d);
-                      const dateKey = toKey(d);
-                      const cell = attendance[course.id]?.[st.id]?.[dateKey];
-                      const status = cell?.status || "";
-                      const today = sameDay(d, TODAY);
-                      return (
-                        <td key={dateKey} className="border-b text-center relative"
-                          style={{ borderColor: BORDER, backgroundColor: hol ? FESTIVO_BG : (today ? "#F2FBFC" : "transparent") }}>
-                          {hol ? (
-                            <div className="py-2 text-slate-300 text-xs">—</div>
-                          ) : (
-                            <button onClick={() => onCellClick(course.id, st.id, dateKey)}
-                              className="w-full h-full py-2.5 flex items-center justify-center hover:bg-slate-50 relative">
-                              <CellIcon status={status} minutes={cell?.minutes} />
-                              {cell?.note && <StickyNote size={9} color={ACCENT} className="absolute top-0.5 right-0.5" />}
-                            </button>
-                          )}
-                          {!hol && (
-                            <button onClick={(e) => onNoteClick(e, course.id, st.id, dateKey)} title="Nota"
-                              className="absolute bottom-0 right-0 opacity-0 hover:opacity-100 group-hover:opacity-40 hover:!opacity-100 p-0.5">
-                              <StickyNote size={9} color={INK_SOFT} />
-                            </button>
-                          )}
-                        </td>
-                      );
-                    })}
-                  </tr>
-                );
-              })}
-            </tbody>
-          </table>
+      <PresenzeTable
+        course={course} players={enrolled} attendance={attendance} displayedDates={displayedDates}
+        onCellClick={onCellClick} onNoteClick={onNoteClick} onOpenAnagrafica={onOpenAnagrafica}
+        onRemoveStudent={onRemoveStudent} studentRecuperi={studentRecuperi} isAdmin={isAdmin}
+        onToggleFrequenza={onToggleFrequenza}
+        emptyLabel='Nessun allievo iscritto. Usa "Aggiungi allievo" per iniziare.'
+      />
+
+      {ritirati.length > 0 && (
+        <div className="mt-4">
+          <div className="text-[13px] font-bold mb-2" style={{ color: INK_SOFT }}>Allievi ritirati ({ritirati.length})</div>
+          <div style={{ opacity: 0.75 }}>
+            <PresenzeTable
+              course={course} players={ritirati} attendance={attendance} displayedDates={displayedDates}
+              onCellClick={onCellClick} onNoteClick={onNoteClick} onOpenAnagrafica={onOpenAnagrafica}
+              onRemoveStudent={onRemoveStudent} studentRecuperi={studentRecuperi} isAdmin={isAdmin}
+              onToggleFrequenza={onToggleFrequenza}
+              emptyLabel="Nessun allievo ritirato."
+            />
+          </div>
         </div>
-      </div>
+      )}
+
       <div className="flex flex-wrap gap-3 mt-2 text-[11px]" style={{ color: INK_SOFT }}>
         <span className="flex items-center gap-1"><Check size={12} color={PRESENTE} /> Presente</span>
         <span className="flex items-center gap-1"><X size={12} color={ASSENTE} /> Assente</span>
         <span className="flex items-center gap-1"><RotateCcw size={12} color={RECUPERO} /> Recupero {!isAdmin && "(solo Admin)"}</span>
         <span className="flex items-center gap-1"><Clock size={12} color={RITARDO} /> Ritardo</span>
         <span>Tocca una cella per cambiare stato · tocca l'icona nota in basso a destra per aggiungere una nota</span>
+      </div>
+    </div>
+  );
+}
+
+function PresenzeTable({ course, players, attendance, displayedDates, onCellClick, onNoteClick, onOpenAnagrafica, onRemoveStudent, studentRecuperi, isAdmin, onToggleFrequenza, emptyLabel }) {
+  const multiGiorno = course.giorni.length > 1;
+  return (
+    <div className="rounded-2xl border overflow-hidden" style={{ borderColor: BORDER, backgroundColor: SURFACE }}>
+      <div className="overflow-auto max-h-[65vh] grid-body" style={{ WebkitOverflowScrolling: "touch", overscrollBehavior: "contain" }}>
+        <table className="border-collapse text-[13px]" style={{ width: "max-content", minWidth: "100%" }}>
+          <thead>
+            <tr>
+              <th className="sticky left-0 top-0 z-20 text-left px-3 py-2 border-b border-r font-bold" style={{ backgroundColor: SURFACE, borderColor: BORDER, minWidth: 160 }}>Allievo</th>
+              {displayedDates.map((d) => {
+                const hol = isHolidayDate(d);
+                const today = sameDay(d, TODAY);
+                return (
+                  <th key={toKey(d)} className="sticky top-0 z-10 px-1 py-2 border-b text-center font-semibold"
+                    style={{ backgroundColor: hol ? FESTIVO_BG : (today ? "#DFF3F6" : SURFACE), borderColor: BORDER, minWidth: 56, color: hol ? "#9AA5A8" : INK }}>
+                    <div>{fmtShort(d)}</div>
+                    <div className="text-[10px] font-normal" style={{ color: INK_SOFT }}>{hol ? "Festivo" : weekdayOf(d)}</div>
+                  </th>
+                );
+              })}
+            </tr>
+          </thead>
+          <tbody>
+            {players.length === 0 && (
+              <tr><td className="px-3 py-6 text-center" colSpan={displayedDates.length + 1} style={{ color: INK_SOFT }}>{emptyLabel}</td></tr>
+            )}
+            {players.map((st) => {
+              const rec = studentRecuperi(st.id);
+              return (
+                <tr key={st.id} className="group">
+                  <td className="sticky left-0 z-10 px-3 py-1.5 border-r border-b" style={{ backgroundColor: SURFACE, borderColor: BORDER }}>
+                    <div className="flex items-center justify-between gap-1">
+                      <button onClick={() => onOpenAnagrafica(st.id)} className="text-left font-semibold hover:underline truncate" style={{ maxWidth: 120 }}>
+                        {st.nome} {st.cognome}
+                      </button>
+                      {isAdmin && (
+                        <button onClick={() => onRemoveStudent(course.id, st.id)} title="Rimuovi dal corso" className="opacity-0 group-hover:opacity-100 p-0.5">
+                          <Trash2 size={12} color={ASSENTE} />
+                        </button>
+                      )}
+                    </div>
+                    {rec.disponibili > 0 && (
+                      <span className="text-[10px] font-bold px-1.5 py-0.5 rounded mr-1" style={{ backgroundColor: "#EFE9F9", color: RECUPERO }}>R disp. {rec.disponibili}</span>
+                    )}
+                    {multiGiorno && (
+                      <div className="flex gap-1 mt-0.5">
+                        {course.giorni.map((g) => {
+                          const attivo = giorniAllievo(course, st.id).includes(g);
+                          return (
+                            <button key={g}
+                              onClick={() => isAdmin && onToggleFrequenza && onToggleFrequenza(course.id, st.id, g)}
+                              title={isAdmin ? `Clicca per ${attivo ? "togliere" : "aggiungere"} ${g}` : undefined}
+                              className="text-[9px] font-bold px-1 rounded"
+                              style={{ backgroundColor: attivo ? "#EAF4F0" : BG, color: attivo ? PRESENTE : INK_SOFT, cursor: isAdmin ? "pointer" : "default" }}>
+                              {g}
+                            </button>
+                          );
+                        })}
+                      </div>
+                    )}
+                  </td>
+                  {displayedDates.map((d) => {
+                    const hol = isHolidayDate(d);
+                    const dateKey = toKey(d);
+                    const cell = attendance[course.id]?.[st.id]?.[dateKey];
+                    const status = cell?.status || "";
+                    const today = sameDay(d, TODAY);
+                    const nonFrequenta = multiGiorno && !giorniAllievo(course, st.id).includes(weekdayOf(d));
+                    const disabilitata = hol || nonFrequenta;
+                    return (
+                      <td key={dateKey} className="border-b text-center relative"
+                        style={{ borderColor: BORDER, backgroundColor: hol ? FESTIVO_BG : (today ? "#F2FBFC" : "transparent"), opacity: nonFrequenta ? 0.35 : 1 }}>
+                        {disabilitata ? (
+                          <div className="py-2 text-slate-300 text-xs" title={nonFrequenta ? "Non frequenta questo giorno" : undefined}>—</div>
+                        ) : (
+                          <button onClick={() => onCellClick(course.id, st.id, dateKey)}
+                            className="w-full h-full py-2.5 flex items-center justify-center hover:bg-slate-50 relative">
+                            <CellIcon status={status} minutes={cell?.minutes} />
+                            {cell?.note && <StickyNote size={9} color={ACCENT} className="absolute top-0.5 right-0.5" />}
+                          </button>
+                        )}
+                        {!disabilitata && (
+                          <button onClick={(e) => onNoteClick(e, course.id, st.id, dateKey)} title="Nota"
+                            className="absolute bottom-0 right-0 opacity-0 hover:opacity-100 group-hover:opacity-40 hover:!opacity-100 p-0.5">
+                            <StickyNote size={9} color={INK_SOFT} />
+                          </button>
+                        )}
+                      </td>
+                    );
+                  })}
+                </tr>
+              );
+            })}
+          </tbody>
+        </table>
       </div>
     </div>
   );
@@ -1415,9 +1566,9 @@ function Stat({ label, value, warn }) {
   );
 }
 
-function CourseFormModal({ form, onCancel, onSave }) {
+function CourseFormModal({ form, sections, onCancel, onSave }) {
   const [data, setData] = useState(form.data);
-  const section = SECTIONS.find((s) => s.key === data.sectionKey) || SECTIONS[0];
+  const section = sections.find((s) => s.key === data.sectionKey) || sections[0];
 
   function toggleGiorno(day) {
     setData((d) => d.giorni.includes(day) ? { ...d, giorni: d.giorni.filter((g) => g !== day) } : { ...d, giorni: [...d.giorni, day] });
