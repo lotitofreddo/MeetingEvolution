@@ -452,6 +452,10 @@ export default function SwimSchoolApp() {
     }));
   }
 
+  function handleSaveStudentNote(studentId, note) {
+    setStudents((prev) => prev.map((st) => st.id === studentId ? { ...st, note } : st));
+  }
+
   function addRecuperoGuest(courseId, studentId) {
     setCourses((prev) => prev.map((c) => c.id === courseId && !(c.recuperiIds || []).includes(studentId)
       ? { ...c, recuperiIds: [...(c.recuperiIds || []), studentId] } : c));
@@ -787,7 +791,7 @@ export default function SwimSchoolApp() {
             onCreateAndAdd={handleCreateAndAddStudent}
             studentRecuperi={studentRecuperi}
             onToggleFrequenza={setFrequenzaGiorno}
-            onAddRecuperoGuest={addRecuperoGuest} onRemoveRecuperoGuest={removeRecuperoGuest} onRecuperoCellClick={handleRecuperoCellClick}
+            onAddRecuperoGuest={addRecuperoGuest} onRemoveRecuperoGuest={removeRecuperoGuest} onRecuperoCellClick={handleRecuperoCellClick} onSaveStudentNote={handleSaveStudentNote}
           />
         )}
 
@@ -1001,7 +1005,7 @@ function CourseView({
   selectedMonthIdx, setSelectedMonthIdx, onBack, onCellClick, onNoteClick, onMarkAllPresent,
   onOpenAnagrafica, onRemoveStudent, addingStudentOpen, setAddingStudentOpen,
   studentSearch, setStudentSearch, newStudentForm, setNewStudentForm, allStudents,
-  onAddExisting, onCreateAndAdd, studentRecuperi, onToggleFrequenza, onAddRecuperoGuest, onRemoveRecuperoGuest, onRecuperoCellClick,
+  onAddExisting, onCreateAndAdd, studentRecuperi, onToggleFrequenza, onAddRecuperoGuest, onRemoveRecuperoGuest, onRecuperoCellClick, onSaveStudentNote,
 }) {
   const courseStart = new Date(course.inizio);
   const courseEnd = new Date(course.fine);
@@ -1118,8 +1122,15 @@ function CourseView({
         course={course} players={enrolled} attendance={attendance} displayedDates={displayedDates}
         onCellClick={onCellClick} onNoteClick={onNoteClick} onOpenAnagrafica={onOpenAnagrafica}
         onRemoveStudent={onRemoveStudent} studentRecuperi={studentRecuperi} isAdmin={isAdmin}
-        onToggleFrequenza={onToggleFrequenza}
+        onToggleFrequenza={onToggleFrequenza} onSaveStudentNote={onSaveStudentNote}
         emptyLabel='Nessun allievo iscritto. Usa "Aggiungi allievo" per iniziare.'
+      />
+
+      <RecuperiSection
+        course={course} guestIds={course.recuperiIds || []} allStudents={allStudents} attendance={attendance}
+        displayedDates={displayedDates} isAdmin={isAdmin} studentRecuperi={studentRecuperi}
+        onAddGuest={onAddRecuperoGuest} onRemoveGuest={onRemoveRecuperoGuest}
+        onCellClick={isAdmin ? onRecuperoCellClick : () => {}} onNoteClick={onNoteClick} onOpenAnagrafica={onOpenAnagrafica} onSaveStudentNote={onSaveStudentNote}
       />
 
       {ritirati.length > 0 && (
@@ -1130,19 +1141,14 @@ function CourseView({
               course={course} players={ritirati} attendance={attendance} displayedDates={displayedDates}
               onCellClick={onCellClick} onNoteClick={onNoteClick} onOpenAnagrafica={onOpenAnagrafica}
               onRemoveStudent={onRemoveStudent} studentRecuperi={studentRecuperi} isAdmin={isAdmin}
-              onToggleFrequenza={onToggleFrequenza}
+              onToggleFrequenza={onToggleFrequenza} onSaveStudentNote={onSaveStudentNote}
               emptyLabel="Nessun allievo ritirato."
             />
           </div>
         </div>
       )}
 
-      <RecuperiSection
-        course={course} guestIds={course.recuperiIds || []} allStudents={allStudents} attendance={attendance}
-        displayedDates={displayedDates} isAdmin={isAdmin} studentRecuperi={studentRecuperi}
-        onAddGuest={onAddRecuperoGuest} onRemoveGuest={onRemoveRecuperoGuest}
-        onCellClick={isAdmin ? onRecuperoCellClick : () => {}} onNoteClick={onNoteClick} onOpenAnagrafica={onOpenAnagrafica}
-      />
+      
 
       <div className="flex flex-wrap gap-3 mt-2 text-[11px]" style={{ color: INK_SOFT }}>
         <span className="flex items-center gap-1"><Check size={12} color={PRESENTE} /> Presente</span>
@@ -1155,7 +1161,53 @@ function CourseView({
   );
 }
 
-function PresenzeTable({ course, players, attendance, displayedDates, onCellClick, onNoteClick, onOpenAnagrafica, onRemoveStudent, studentRecuperi, isAdmin, onToggleFrequenza, emptyLabel, showFrequenza = true, removeTitle }) {
+function StudentNote({ student, onSave }) {
+  const [editing, setEditing] = useState(false);
+  const [value, setValue] = useState("");
+  const cancelRef = useRef(false);
+
+  function start() {
+    if (!onSave) return;
+    setValue(student.note || "");
+    cancelRef.current = false;
+    setEditing(true);
+  }
+  function commit() {
+    setEditing(false);
+    if (cancelRef.current) { cancelRef.current = false; return; }
+    const v = value.trim();
+    if (v !== (student.note || "")) onSave(student.id, v);
+  }
+
+  if (editing) {
+    return (
+      <input autoFocus value={value} onChange={(e) => setValue(e.target.value)}
+        onBlur={commit}
+        onKeyDown={(e) => {
+          if (e.key === "Enter") e.target.blur();
+          if (e.key === "Escape") { cancelRef.current = true; e.target.blur(); }
+        }}
+        placeholder="Scrivi una nota…"
+        className="px-1.5 py-0.5 rounded border text-[11px] outline-none" style={{ borderColor: ACCENT, width: 150 }} />
+    );
+  }
+  if (student.note) {
+    return (
+      <button onClick={start} title={student.note} className="flex items-center gap-1 text-[11px] italic min-w-0" style={{ color: INK_SOFT, maxWidth: 120 }}>
+        <StickyNote size={11} color={ACCENT} className="shrink-0" />
+        <span className="truncate">{student.note}</span>
+      </button>
+    );
+  }
+  if (!onSave) return null;
+  return (
+    <button onClick={start} title="Aggiungi una nota" className="p-0.5" style={{ opacity: 0.45 }}>
+      <Pencil size={11} color={INK_SOFT} />
+    </button>
+  );
+}
+
+function PresenzeTable({ course, players, attendance, displayedDates, onCellClick, onNoteClick, onOpenAnagrafica, onRemoveStudent, studentRecuperi, isAdmin, onToggleFrequenza, emptyLabel, showFrequenza = true, removeTitle, onSaveStudentNote }) {
   const multiGiorno = showFrequenza && course.giorni.length > 1;
   return (
     <div className="rounded-2xl border overflow-hidden" style={{ borderColor: BORDER, backgroundColor: SURFACE }}>
@@ -1163,7 +1215,7 @@ function PresenzeTable({ course, players, attendance, displayedDates, onCellClic
         <table className="border-collapse text-[13px]" style={{ width: "max-content", minWidth: "100%" }}>
           <thead>
             <tr>
-              <th className="sticky left-0 top-0 z-20 text-left px-3 py-2 border-b border-r font-bold" style={{ backgroundColor: SURFACE, borderColor: BORDER, minWidth: 220 }}>Allievo</th>
+              <th className="sticky left-0 top-0 z-20 text-left px-3 py-2 border-b border-r font-bold" style={{ backgroundColor: SURFACE, borderColor: BORDER, minWidth: 250 }}>Allievo</th>
               {displayedDates.map((d) => {
                 const hol = isHolidayDate(d);
                 const today = sameDay(d, TODAY);
@@ -1187,9 +1239,12 @@ function PresenzeTable({ course, players, attendance, displayedDates, onCellClic
                 <tr key={st.id} className="group">
                   <td className="sticky left-0 z-10 px-3 py-1.5 border-r border-b" style={{ backgroundColor: SURFACE, borderColor: BORDER }}>
                     <div className="flex items-center justify-between gap-1">
+                      <div className="flex items-center gap-1.5 min-w-0">
                       <button onClick={() => onOpenAnagrafica(st.id)} className="text-left font-semibold hover:underline truncate" style={{ maxWidth: 120 }}>
                         {st.nome} {st.cognome}
                       </button>
+                      <StudentNote student={st} onSave={onSaveStudentNote} />
+                    </div>
                       {isAdmin && (
                         <button onClick={() => onRemoveStudent(course.id, st.id)} title={removeTitle || "Rimuovi dal corso"} className="opacity-0 group-hover:opacity-100 p-0.5">
                           <Trash2 size={12} color={ASSENTE} />
@@ -1255,7 +1310,7 @@ function PresenzeTable({ course, players, attendance, displayedDates, onCellClic
   );
 }
 
-function RecuperiSection({ course, guestIds, allStudents, attendance, displayedDates, isAdmin, studentRecuperi, onAddGuest, onRemoveGuest, onCellClick, onNoteClick, onOpenAnagrafica }) {
+function RecuperiSection({ course, guestIds, allStudents, attendance, displayedDates, isAdmin, studentRecuperi, onAddGuest, onRemoveGuest, onCellClick, onNoteClick, onOpenAnagrafica, onSaveStudentNote }) {
   const [open, setOpen] = useState(false);
   const [search, setSearch] = useState("");
 
@@ -1312,7 +1367,7 @@ function RecuperiSection({ course, guestIds, allStudents, attendance, displayedD
         course={course} players={guests} attendance={attendance} displayedDates={displayedDates}
         onCellClick={onCellClick} onNoteClick={onNoteClick} onOpenAnagrafica={onOpenAnagrafica}
         onRemoveStudent={(cid, sid) => onRemoveGuest(cid, sid)} studentRecuperi={studentRecuperi} isAdmin={isAdmin}
-        showFrequenza={false} removeTitle="Rimuovi dai recuperi"
+        showFrequenza={false} removeTitle="Rimuovi dai recuperi" onSaveStudentNote={onSaveStudentNote}
         emptyLabel='Nessun allievo in recupero. Usa "Aggiungi allievo per recupero" per sceglierlo tra gli allievi già esistenti.'
       />
       <div className="text-[11px] mt-1.5" style={{ color: INK_SOFT }}>
