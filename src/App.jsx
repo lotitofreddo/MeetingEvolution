@@ -401,7 +401,7 @@ export default function SwimSchoolApp() {
   }
   function handleDuplicateCourse(course) {
     const id = "c" + (Math.max(0, ...courses.map((c) => parseInt(c.id.slice(1), 10))) + 1);
-    setCourses((prev) => [...prev, { ...course, id, nome: course.nome + " (copia)", studentIds: [] }]);
+    setCourses((prev) => [...prev, { ...course, id, nome: course.nome + " (copia)", studentIds: [], recuperiIds: [], frequenza: {} }]);
   }
   function handleArchiveCourse(courseId, archived) {
     setCourses((prev) => prev.map((c) => c.id === courseId ? { ...c, archived } : c));
@@ -450,6 +450,39 @@ export default function SwimSchoolApp() {
       }
       return { ...c, frequenza: { ...(c.frequenza || {}), [studentId]: next } };
     }));
+  }
+
+  function addRecuperoGuest(courseId, studentId) {
+    setCourses((prev) => prev.map((c) => c.id === courseId && !(c.recuperiIds || []).includes(studentId)
+      ? { ...c, recuperiIds: [...(c.recuperiIds || []), studentId] } : c));
+  }
+
+  function removeRecuperoGuest(courseId, studentId) {
+    if (!window.confirm("Rimuovere questo allievo dai recuperi di questo corso? L'anagrafica e lo storico restano invariati.")) return;
+    setCourses((prev) => prev.map((c) => c.id === courseId
+      ? { ...c, recuperiIds: (c.recuperiIds || []).filter((id) => id !== studentId) } : c));
+  }
+
+  function handleRecuperoCellClick(courseId, studentId, dateKey) {
+    const current = attendance[courseId]?.[studentId]?.[dateKey];
+    const giaRecupero = current && current.status === "R";
+    if (!giaRecupero) {
+      const rec = studentRecuperi(studentId);
+      if (rec.disponibili <= 0 && !window.confirm("Questo allievo non ha recuperi disponibili. Segnare comunque il recupero?")) return;
+    }
+    setAttendance((prev) => {
+      const courseAtt = { ...(prev[courseId] || {}) };
+      const sAtt = { ...(courseAtt[studentId] || {}) };
+      const cur = sAtt[dateKey];
+      if (cur && cur.status === "R") {
+        if (cur.note) sAtt[dateKey] = { status: "", note: cur.note };
+        else delete sAtt[dateKey];
+      } else {
+        sAtt[dateKey] = { status: "R", ...(cur && cur.note ? { note: cur.note } : {}) };
+      }
+      courseAtt[studentId] = sAtt;
+      return { ...prev, [courseId]: courseAtt };
+    });
   }
 
   /* ---------- Import Excel ---------- */
@@ -754,6 +787,7 @@ export default function SwimSchoolApp() {
             onCreateAndAdd={handleCreateAndAddStudent}
             studentRecuperi={studentRecuperi}
             onToggleFrequenza={setFrequenzaGiorno}
+            onAddRecuperoGuest={addRecuperoGuest} onRemoveRecuperoGuest={removeRecuperoGuest} onRecuperoCellClick={handleRecuperoCellClick}
           />
         )}
 
@@ -967,7 +1001,7 @@ function CourseView({
   selectedMonthIdx, setSelectedMonthIdx, onBack, onCellClick, onNoteClick, onMarkAllPresent,
   onOpenAnagrafica, onRemoveStudent, addingStudentOpen, setAddingStudentOpen,
   studentSearch, setStudentSearch, newStudentForm, setNewStudentForm, allStudents,
-  onAddExisting, onCreateAndAdd, studentRecuperi, onToggleFrequenza,
+  onAddExisting, onCreateAndAdd, studentRecuperi, onToggleFrequenza, onAddRecuperoGuest, onRemoveRecuperoGuest, onRecuperoCellClick,
 }) {
   const courseStart = new Date(course.inizio);
   const courseEnd = new Date(course.fine);
@@ -988,7 +1022,7 @@ function CourseView({
   const ritirati = enrolledAll.filter((s) => s.stato === "ritirato");
 
   const searchResults = allStudents.filter((s) =>
-    !course.studentIds.includes(s.id) &&
+    !course.studentIds.includes(s.id) && !(course.recuperiIds || []).includes(s.id) &&
     `${s.nome} ${s.cognome}`.toLowerCase().includes(studentSearch.toLowerCase()) &&
     studentSearch.trim().length > 0
   ).slice(0, 8);
@@ -1103,6 +1137,13 @@ function CourseView({
         </div>
       )}
 
+      <RecuperiSection
+        course={course} guestIds={course.recuperiIds || []} allStudents={allStudents} attendance={attendance}
+        displayedDates={displayedDates} isAdmin={isAdmin} studentRecuperi={studentRecuperi}
+        onAddGuest={onAddRecuperoGuest} onRemoveGuest={onRemoveRecuperoGuest}
+        onCellClick={isAdmin ? onRecuperoCellClick : () => {}} onNoteClick={onNoteClick} onOpenAnagrafica={onOpenAnagrafica}
+      />
+
       <div className="flex flex-wrap gap-3 mt-2 text-[11px]" style={{ color: INK_SOFT }}>
         <span className="flex items-center gap-1"><Check size={12} color={PRESENTE} /> Presente</span>
         <span className="flex items-center gap-1"><X size={12} color={ASSENTE} /> Assente</span>
@@ -1114,15 +1155,15 @@ function CourseView({
   );
 }
 
-function PresenzeTable({ course, players, attendance, displayedDates, onCellClick, onNoteClick, onOpenAnagrafica, onRemoveStudent, studentRecuperi, isAdmin, onToggleFrequenza, emptyLabel }) {
-  const multiGiorno = course.giorni.length > 1;
+function PresenzeTable({ course, players, attendance, displayedDates, onCellClick, onNoteClick, onOpenAnagrafica, onRemoveStudent, studentRecuperi, isAdmin, onToggleFrequenza, emptyLabel, showFrequenza = true, removeTitle }) {
+  const multiGiorno = showFrequenza && course.giorni.length > 1;
   return (
     <div className="rounded-2xl border overflow-hidden" style={{ borderColor: BORDER, backgroundColor: SURFACE }}>
       <div className="overflow-auto max-h-[65vh] grid-body" style={{ WebkitOverflowScrolling: "touch", overscrollBehavior: "contain" }}>
         <table className="border-collapse text-[13px]" style={{ width: "max-content", minWidth: "100%" }}>
           <thead>
             <tr>
-              <th className="sticky left-0 top-0 z-20 text-left px-3 py-2 border-b border-r font-bold" style={{ backgroundColor: SURFACE, borderColor: BORDER, minWidth: 160 }}>Allievo</th>
+              <th className="sticky left-0 top-0 z-20 text-left px-3 py-2 border-b border-r font-bold" style={{ backgroundColor: SURFACE, borderColor: BORDER, minWidth: 220 }}>Allievo</th>
               {displayedDates.map((d) => {
                 const hol = isHolidayDate(d);
                 const today = sameDay(d, TODAY);
@@ -1150,7 +1191,7 @@ function PresenzeTable({ course, players, attendance, displayedDates, onCellClic
                         {st.nome} {st.cognome}
                       </button>
                       {isAdmin && (
-                        <button onClick={() => onRemoveStudent(course.id, st.id)} title="Rimuovi dal corso" className="opacity-0 group-hover:opacity-100 p-0.5">
+                        <button onClick={() => onRemoveStudent(course.id, st.id)} title={removeTitle || "Rimuovi dal corso"} className="opacity-0 group-hover:opacity-100 p-0.5">
                           <Trash2 size={12} color={ASSENTE} />
                         </button>
                       )}
@@ -1159,15 +1200,15 @@ function PresenzeTable({ course, players, attendance, displayedDates, onCellClic
                       <span className="text-[10px] font-bold px-1.5 py-0.5 rounded mr-1" style={{ backgroundColor: "#EFE9F9", color: RECUPERO }}>R disp. {rec.disponibili}</span>
                     )}
                     {multiGiorno && (
-                      <div className="flex gap-1 mt-0.5">
+                      <div className="flex items-center gap-1.5 mt-1.5"><span className="text-[10px] font-semibold" style={{ color: INK_SOFT }}>Frequenta:</span>
                         {course.giorni.map((g) => {
                           const attivo = giorniAllievo(course, st.id).includes(g);
                           return (
                             <button key={g}
                               onClick={() => isAdmin && onToggleFrequenza && onToggleFrequenza(course.id, st.id, g)}
                               title={isAdmin ? `Clicca per ${attivo ? "togliere" : "aggiungere"} ${g}` : undefined}
-                              className="text-[9px] font-bold px-1 rounded"
-                              style={{ backgroundColor: attivo ? "#EAF4F0" : BG, color: attivo ? PRESENTE : INK_SOFT, cursor: isAdmin ? "pointer" : "default" }}>
+                              className="text-[12px] font-bold px-2.5 py-1 rounded-md border"
+                              style={{ backgroundColor: attivo ? PRESENTE : SURFACE, color: attivo ? "white" : INK_SOFT, borderColor: attivo ? PRESENTE : BORDER, textDecoration: attivo ? "none" : "line-through", cursor: isAdmin ? "pointer" : "default" }}>
                               {g}
                             </button>
                           );
@@ -1209,6 +1250,73 @@ function PresenzeTable({ course, players, attendance, displayedDates, onCellClic
             })}
           </tbody>
         </table>
+      </div>
+    </div>
+  );
+}
+
+function RecuperiSection({ course, guestIds, allStudents, attendance, displayedDates, isAdmin, studentRecuperi, onAddGuest, onRemoveGuest, onCellClick, onNoteClick, onOpenAnagrafica }) {
+  const [open, setOpen] = useState(false);
+  const [search, setSearch] = useState("");
+
+  const guests = guestIds.map((id) => allStudents.find((st) => st.id === id)).filter(Boolean);
+  const q = search.trim().toLowerCase();
+  const candidates = allStudents
+    .filter((st) => st.stato !== "ritirato" && !course.studentIds.includes(st.id) && !guestIds.includes(st.id))
+    .map((st) => ({ st, rec: studentRecuperi(st.id) }))
+    .filter(({ st, rec }) => q ? `${st.nome} ${st.cognome}`.toLowerCase().includes(q) : rec.disponibili > 0)
+    .sort((x, y) => y.rec.disponibili - x.rec.disponibili)
+    .slice(0, 10);
+
+  return (
+    <div className="mt-4">
+      <div className="flex flex-wrap items-center justify-between gap-2 mb-2">
+        <div className="text-[13px] font-bold" style={{ color: INK_SOFT }}>Recuperi ({guests.length} allievi)</div>
+        {isAdmin && (
+          <button onClick={() => setOpen(!open)} className="text-[12px] font-bold px-3 py-1.5 rounded-lg text-white flex items-center gap-1" style={{ backgroundColor: RECUPERO }}>
+            <UserPlus size={13} /> Aggiungi allievo per recupero
+          </button>
+        )}
+      </div>
+
+      {open && isAdmin && (
+        <div className="mb-3 p-3 rounded-xl border" style={{ borderColor: BORDER, backgroundColor: SURFACE }}>
+          <div className="relative mb-2">
+            <Search size={14} className="absolute left-2.5 top-2.5" color={INK_SOFT} />
+            <input autoFocus value={search} onChange={(e) => setSearch(e.target.value)}
+              placeholder="Cerca un allievo già esistente per nome o cognome…"
+              className="w-full pl-8 pr-2 py-2 rounded-lg text-[13px] border outline-none" style={{ borderColor: BORDER }} />
+          </div>
+          <div className="text-[11px] font-semibold mb-1" style={{ color: INK_SOFT }}>{q ? "Risultati" : "Allievi con recuperi disponibili"}</div>
+          <div className="max-h-48 overflow-auto rounded-lg border" style={{ borderColor: BORDER }}>
+            {candidates.length === 0 && (
+              <div className="px-3 py-2 text-[12px]" style={{ color: INK_SOFT }}>{q ? "Nessun allievo trovato" : "Nessun allievo ha recuperi disponibili: cerca per nome."}</div>
+            )}
+            {candidates.map(({ st, rec }) => (
+              <button key={st.id} onClick={() => onAddGuest(course.id, st.id)}
+                className="w-full text-left px-3 py-2 text-[13px] hover:bg-slate-50 flex items-center justify-between gap-2">
+                <span>{st.nome} {st.cognome}</span>
+                <span className="flex items-center gap-2">
+                  <span className="text-[11px]" style={{ color: INK_SOFT }}>{st.livello}</span>
+                  {rec.disponibili > 0 && (
+                    <span className="text-[10px] font-bold px-1.5 py-0.5 rounded" style={{ backgroundColor: "#EFE9F9", color: RECUPERO }}>R disp. {rec.disponibili}</span>
+                  )}
+                </span>
+              </button>
+            ))}
+          </div>
+        </div>
+      )}
+
+      <PresenzeTable
+        course={course} players={guests} attendance={attendance} displayedDates={displayedDates}
+        onCellClick={onCellClick} onNoteClick={onNoteClick} onOpenAnagrafica={onOpenAnagrafica}
+        onRemoveStudent={(cid, sid) => onRemoveGuest(cid, sid)} studentRecuperi={studentRecuperi} isAdmin={isAdmin}
+        showFrequenza={false} removeTitle="Rimuovi dai recuperi"
+        emptyLabel='Nessun allievo in recupero. Usa "Aggiungi allievo per recupero" per sceglierlo tra gli allievi già esistenti.'
+      />
+      <div className="text-[11px] mt-1.5" style={{ color: INK_SOFT }}>
+        Tocca una cella per segnare il recupero svolto in quel giorno (solo Admin). Gli allievi sono quelli già in anagrafica: non viene creato nessun nuovo utente.
       </div>
     </div>
   );
